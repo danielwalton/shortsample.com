@@ -57,6 +57,43 @@
             border-radius: 2px;
             vertical-align: middle;
         }
+        .color-controls {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 8px;
+            backdrop-filter: blur(10px);
+        }
+        .color-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .color-control label {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 13px;
+        }
+        .color-control input[type="color"] {
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background: transparent;
+        }
+        .color-control input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 0;
+        }
+        .color-control input[type="color"]::-webkit-color-swatch {
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
@@ -66,7 +103,17 @@
         <span class="color-box" id="userColor"></span>
         <span id="userId">connecting...</span>
     </div>
-    <div class="instructions">Click and drag to draw rectangles</div>
+    <div class="color-controls">
+        <div class="color-control">
+            <label for="borderColor">Border</label>
+            <input type="color" id="borderColor" value="#000000">
+        </div>
+        <div class="color-control">
+            <label for="fillColor">Fill</label>
+            <input type="color" id="fillColor" value="#ffffff">
+        </div>
+    </div>
+    <div class="instructions">Click for square, drag for rectangle, scroll to zoom, middle-drag to pan</div>
 
     <script>
         const canvas = document.getElementById('canvas');
@@ -83,9 +130,51 @@
         let drawStart = null;
         let currentRect = null;
         const GRID_SIZE = 50;
+        const DEFAULT_SQUARE_SIZE = GRID_SIZE * 2; // Default size for single-click squares
+
+        // Zoom state
+        let zoom = 1;
+        let panX = 0;
+        let panY = 0;
+        const MIN_ZOOM = 0.01;
+        const MAX_ZOOM = 100;
+
+        // Load view state from URL
+        function loadViewFromURL() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('z')) zoom = parseFloat(params.get('z')) || 1;
+            if (params.has('x')) panX = parseFloat(params.get('x')) || 0;
+            if (params.has('y')) panY = parseFloat(params.get('y')) || 0;
+        }
+
+        // Save view state to URL (debounced)
+        let saveTimeout = null;
+        function saveViewToURL() {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                const params = new URLSearchParams();
+                params.set('z', zoom.toFixed(4));
+                params.set('x', panX.toFixed(2));
+                params.set('y', panY.toFixed(2));
+                const newURL = `${window.location.pathname}?${params.toString()}`;
+                history.replaceState(null, '', newURL);
+            }, 100);
+        }
+
+        // Pan state
+        let isPanning = false;
+        let panStart = { x: 0, y: 0 };
 
         // Initial canvas setup
         resize();
+        // Load view from URL or start centered
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('z') || params.has('x') || params.has('y')) {
+            loadViewFromURL();
+        } else {
+            panX = canvas.width / 2;
+            panY = canvas.height / 2;
+        }
 
         // Generate user color from ID
         function generateColor(id) {
@@ -128,6 +217,24 @@
                 userIdDisplay.textContent = myId;
             } else if (data.type === 'count') {
                 document.getElementById('count').textContent = data.count;
+            } else if (data.type === 'rect_sync') {
+                // Load all rectangles from database
+                console.log('rect_sync received:', data.rectangles?.length, 'rectangles', data);
+                if (data.rectangles && data.rectangles.length > 0) {
+                    data.rectangles.forEach(rect => {
+                        rectangles.set(rect.rectId, {
+                            x: rect.x * canvas.width,
+                            y: rect.y * canvas.height,
+                            width: rect.width * canvas.width,
+                            height: rect.height * canvas.height,
+                            borderColor: rect.borderColor || '#ffffff',
+                            fillColor: rect.fillColor || '#ffffff',
+                            userId: rect.userId
+                        });
+                    });
+                    console.log('Loaded', rectangles.size, 'rectangles');
+                    render();
+                }
             } else if (data.type === 'rect_create') {
                 // Denormalize coordinates from server (0-1 -> pixels)
                 rectangles.set(data.rectId, {
@@ -135,7 +242,8 @@
                     y: data.y * canvas.height,
                     width: data.width * canvas.width,
                     height: data.height * canvas.height,
-                    color: data.color,
+                    borderColor: data.borderColor || data.color,
+                    fillColor: data.fillColor || data.color,
                     userId: data.id
                 });
                 render();
@@ -148,14 +256,29 @@
                     rect.height = data.height;
                     render();
                 }
+            } else if (data.type === 'rect_delete') {
+                rectangles.delete(data.rectId);
+                render();
             } else if (data.type === 'cursor') {
                 cursors.set(data.id, { x: data.x, y: data.y, color: generateColor(data.id) });
                 render();
             }
         };
 
-        // Mouse handling
+        // Mouse handling - returns world coordinates (accounting for zoom/pan)
         function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const screenX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const screenY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            // Convert screen to world coordinates
+            return {
+                x: (screenX - panX) / zoom,
+                y: (screenY - panY) / zoom
+            };
+        }
+
+        // Convert world coordinates to screen for cursor broadcast
+        function getScreenPos(e) {
             const rect = canvas.getBoundingClientRect();
             return {
                 x: (e.clientX - rect.left) * (canvas.width / rect.width),
@@ -164,26 +287,53 @@
         }
 
         canvas.addEventListener('mousedown', (e) => {
-            isDrawing = true;
-            const pos = getMousePos(e);
-            drawStart = {
-                x: snapToGrid(pos.x),
-                y: snapToGrid(pos.y)
-            };
-            currentRect = {
-                x: drawStart.x,
-                y: drawStart.y,
-                width: 0,
-                height: 0,
-                color: myColor,
-                userId: myId,
-                rectId: `${myId}_${Date.now()}`
-            };
+            // Middle mouse button = pan
+            if (e.button === 1) {
+                e.preventDefault();
+                isPanning = true;
+                panStart = { x: e.clientX - panX, y: e.clientY - panY };
+                canvas.style.cursor = 'grabbing';
+                return;
+            }
+
+            // Left mouse button = draw
+            if (e.button === 0) {
+                isDrawing = true;
+                const pos = getMousePos(e);
+                drawStart = {
+                    x: snapToGrid(pos.x),
+                    y: snapToGrid(pos.y)
+                };
+                currentRect = {
+                    x: drawStart.x,
+                    y: drawStart.y,
+                    width: 0,
+                    height: 0,
+                    borderColor: getBorderColor(),
+                    fillColor: getFillColor(),
+                    userId: myId,
+                    rectId: `${myId}_${Date.now()}`
+                };
+            }
+        });
+
+        // Prevent middle-click auto-scroll
+        canvas.addEventListener('auxclick', (e) => {
+            if (e.button === 1) e.preventDefault();
         });
 
         canvas.addEventListener('mousemove', (e) => {
+            // Handle panning
+            if (isPanning) {
+                panX = e.clientX - panStart.x;
+                panY = e.clientY - panStart.y;
+                saveViewToURL();
+                render();
+                return;
+            }
+
             const pos = getMousePos(e);
-            
+
             // Broadcast cursor position
             if (ws.readyState === WebSocket.OPEN && myId) {
                 ws.send(JSON.stringify({
@@ -197,10 +347,10 @@
             if (isDrawing && currentRect) {
                 const snappedX = snapToGrid(pos.x);
                 const snappedY = snapToGrid(pos.y);
-                
+
                 currentRect.width = snappedX - drawStart.x;
                 currentRect.height = snappedY - drawStart.y;
-                
+
                 // Normalize (handle dragging in any direction)
                 if (currentRect.width < 0) {
                     currentRect.x = snappedX;
@@ -214,96 +364,204 @@
                 } else {
                     currentRect.y = drawStart.y;
                 }
-                
+
                 render();
             }
         });
 
-        canvas.addEventListener('mouseup', () => {
+        canvas.addEventListener('mouseup', (e) => {
+            // Stop panning
+            if (isPanning) {
+                isPanning = false;
+                canvas.style.cursor = 'crosshair';
+                return;
+            }
+
             if (isDrawing && currentRect) {
-                // Only create if rectangle has some size
-                if (currentRect.width > 5 && currentRect.height > 5) {
-                    rectangles.set(currentRect.rectId, currentRect);
-                    
-                    // Broadcast to others
+                // Single click = create a square at click position
+                if (currentRect.width < 5 && currentRect.height < 5) {
+                    currentRect.width = DEFAULT_SQUARE_SIZE;
+                    currentRect.height = DEFAULT_SQUARE_SIZE;
+                    // Center the square on the click point
+                    currentRect.x = drawStart.x - DEFAULT_SQUARE_SIZE / 2;
+                    currentRect.y = drawStart.y - DEFAULT_SQUARE_SIZE / 2;
+                    // Snap to grid
+                    currentRect.x = snapToGrid(currentRect.x);
+                    currentRect.y = snapToGrid(currentRect.y);
+                }
+
+                // Check for covered rectangles and delete them
+                const coveredRects = findCoveredRectangles(currentRect);
+                coveredRects.forEach(rectId => {
+                    rectangles.delete(rectId);
+                    // Notify server to delete
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({
-                            type: 'rect_create',
-                            rectId: currentRect.rectId,
-                            x: currentRect.x / canvas.width,
-                            y: currentRect.y / canvas.height,
-                            width: currentRect.width / canvas.width,
-                            height: currentRect.height / canvas.height,
-                            color: currentRect.color
+                            type: 'rect_delete',
+                            rectId: rectId
                         }));
                     }
+                });
+
+                rectangles.set(currentRect.rectId, currentRect);
+
+                // Broadcast to others
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'rect_create',
+                        rectId: currentRect.rectId,
+                        x: currentRect.x / canvas.width,
+                        y: currentRect.y / canvas.height,
+                        width: currentRect.width / canvas.width,
+                        height: currentRect.height / canvas.height,
+                        borderColor: currentRect.borderColor,
+                        fillColor: currentRect.fillColor
+                    }));
                 }
-                
+
                 currentRect = null;
                 isDrawing = false;
                 render();
             }
         });
 
+        // Check if rectA completely covers rectB
+        function isRectCovered(coveringRect, coveredRect) {
+            return coveringRect.x <= coveredRect.x &&
+                   coveringRect.y <= coveredRect.y &&
+                   (coveringRect.x + coveringRect.width) >= (coveredRect.x + coveredRect.width) &&
+                   (coveringRect.y + coveringRect.height) >= (coveredRect.y + coveredRect.height);
+        }
+
+        // Find all rectangles that are completely covered by the new rectangle
+        function findCoveredRectangles(newRect) {
+            const covered = [];
+            rectangles.forEach((rect, rectId) => {
+                if (isRectCovered(newRect, rect)) {
+                    covered.push(rectId);
+                }
+            });
+            return covered;
+        }
+
         // Rendering
         function render() {
-            // Clear
+            // Clear (in screen space)
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.fillStyle = '#0a0a0a';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Draw grid
+            // Apply zoom and pan
+            ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
+
+            // Draw grid (in world space)
             ctx.strokeStyle = '#1a1a1a';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 1 / zoom;
             const gridSize = 50;
-            for (let x = 0; x < canvas.width; x += gridSize) {
+            // Calculate visible area in world coordinates
+            const worldLeft = -panX / zoom;
+            const worldTop = -panY / zoom;
+            const worldRight = (canvas.width - panX) / zoom;
+            const worldBottom = (canvas.height - panY) / zoom;
+
+            const startX = Math.floor(worldLeft / gridSize) * gridSize;
+            const startY = Math.floor(worldTop / gridSize) * gridSize;
+
+            for (let x = startX; x <= worldRight; x += gridSize) {
                 ctx.beginPath();
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, canvas.height);
+                ctx.moveTo(x, worldTop);
+                ctx.lineTo(x, worldBottom);
                 ctx.stroke();
             }
-            for (let y = 0; y < canvas.height; y += gridSize) {
+            for (let y = startY; y <= worldBottom; y += gridSize) {
                 ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(canvas.width, y);
+                ctx.moveTo(worldLeft, y);
+                ctx.lineTo(worldRight, y);
                 ctx.stroke();
             }
 
-            // Draw all rectangles
+            // Draw all rectangles (in world space)
             rectangles.forEach((rect) => {
-                ctx.fillStyle = rect.color + '40'; // 25% opacity
+                // Fill with selected fill color
+                ctx.fillStyle = rect.fillColor;
                 ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-                ctx.strokeStyle = rect.color;
-                ctx.lineWidth = 2;
+                // Border with selected border color
+                ctx.strokeStyle = rect.borderColor;
+                ctx.lineWidth = 2 / zoom;
                 ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
             });
 
             // Draw current rectangle being created
             if (currentRect) {
-                ctx.fillStyle = currentRect.color + '60';
+                ctx.fillStyle = currentRect.fillColor + '80'; // 50% opacity while drawing
                 ctx.fillRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height);
-                ctx.strokeStyle = currentRect.color;
-                ctx.setLineDash([5, 5]);
+                ctx.strokeStyle = currentRect.borderColor;
+                ctx.setLineDash([5 / zoom, 5 / zoom]);
+                ctx.lineWidth = 2 / zoom;
                 ctx.strokeRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height);
                 ctx.setLineDash([]);
             }
 
-            // Draw cursors
+            // Draw cursors (in world space - convert from normalized)
             cursors.forEach((cursor, userId) => {
                 if (userId === myId) return;
+                // Cursor positions are stored as normalized (0-1), convert to world coords
+                // They were originally based on canvas size, so we use base canvas dimensions
                 const x = cursor.x * canvas.width;
                 const y = cursor.y * canvas.height;
-                
+
                 ctx.fillStyle = cursor.color;
                 ctx.beginPath();
-                ctx.arc(x, y, 6, 0, Math.PI * 2);
+                ctx.arc(x, y, 6 / zoom, 0, Math.PI * 2);
                 ctx.fill();
-                
+
                 ctx.fillStyle = cursor.color + '30';
                 ctx.beginPath();
-                ctx.arc(x, y, 12, 0, Math.PI * 2);
+                ctx.arc(x, y, 12 / zoom, 0, Math.PI * 2);
                 ctx.fill();
             });
+
+            // Reset transform
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
         }
+
+        // Get colors from pickers
+        function getBorderColor() {
+            return document.getElementById('borderColor').value;
+        }
+
+        function getFillColor() {
+            return document.getElementById('fillColor').value;
+        }
+
+        // Mouse wheel zoom
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+
+            // Get screen coordinates
+            const rect = canvas.getBoundingClientRect();
+            const screenX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const screenY = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+            // Zoom factor
+            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * zoomFactor));
+
+            if (newZoom !== zoom) {
+                // Calculate world point under cursor before zoom
+                const worldX = (screenX - panX) / zoom;
+                const worldY = (screenY - panY) / zoom;
+
+                zoom = newZoom;
+
+                // Adjust pan so the same world point stays under cursor
+                panX = screenX - worldX * zoom;
+                panY = screenY - worldY * zoom;
+
+                saveViewToURL();
+                render();
+            }
+        }, { passive: false });
 
         // Initial render
         render();

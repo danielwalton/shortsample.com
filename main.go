@@ -161,13 +161,26 @@ func (h *Hub) run() {
 				cityArray = append(cityArray, cell)
 			}
 			cityMu.RUnlock()
-			
+
 			citySyncMsg, _ := json.Marshal(map[string]interface{}{
 				"type": "city_sync",
 				"city": cityArray,
 			})
 			client.send <- citySyncMsg
-			
+
+			// Send existing rectangles
+			rects, err := loadRectangles()
+			if err != nil {
+				log.Printf("Failed to load rectangles: %v", err)
+			} else {
+				log.Printf("Sending %d rectangles to client", len(rects))
+				rectSyncMsg, _ := json.Marshal(map[string]interface{}{
+					"type":       "rect_sync",
+					"rectangles": rects,
+				})
+				client.send <- rectSyncMsg
+			}
+
 			// Broadcast participant count
 			h.broadcastCount(count)
 
@@ -262,6 +275,39 @@ func (c *Client) readPump() {
 			msg, _ := json.Marshal(data)
 			c.hub.broadcast <- msg
 			
+		case "rect_create":
+			// Save rectangle to database
+			rect := Rectangle{
+				RectID:      data["rectId"].(string),
+				X:           data["x"].(float64),
+				Y:           data["y"].(float64),
+				Width:       data["width"].(float64),
+				Height:      data["height"].(float64),
+				BorderColor: data["borderColor"].(string),
+				FillColor:   data["fillColor"].(string),
+				UserID:      c.id,
+			}
+			if err := saveRectangle(rect); err != nil {
+				log.Printf("Failed to save rectangle: %v", err)
+			}
+			// Broadcast to others
+			data["id"] = c.id
+			msg, _ := json.Marshal(data)
+			c.hub.broadcast <- msg
+
+		case "rect_delete":
+			// Delete rectangle from database
+			rectId, _ := data["rectId"].(string)
+			if rectId != "" {
+				if err := deleteRectangle(rectId); err != nil {
+					log.Printf("Failed to delete rectangle: %v", err)
+				}
+				// Broadcast to others
+				data["id"] = c.id
+				msg, _ := json.Marshal(data)
+				c.hub.broadcast <- msg
+			}
+
 		default:
 			// Default: add client ID and broadcast
 			data["id"] = c.id
@@ -314,7 +360,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Create table
+	// Create tables
 	_, err = db.Exec(context.Background(), `
 		CREATE TABLE IF NOT EXISTS items (
 			id SERIAL PRIMARY KEY,
@@ -323,7 +369,24 @@ func main() {
 		)
 	`)
 	if err != nil {
-		log.Fatal("Unable to create table:", err)
+		log.Fatal("Unable to create items table:", err)
+	}
+
+	_, err = db.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS rectangles (
+			rect_id TEXT PRIMARY KEY,
+			x DOUBLE PRECISION NOT NULL,
+			y DOUBLE PRECISION NOT NULL,
+			width DOUBLE PRECISION NOT NULL,
+			height DOUBLE PRECISION NOT NULL,
+			border_color TEXT NOT NULL,
+			fill_color TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)
+	`)
+	if err != nil {
+		log.Fatal("Unable to create rectangles table:", err)
 	}
 
 	// Start WebSocket hub
@@ -393,6 +456,58 @@ type Item struct {
 	ID        int       `json:"id"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Rectangle struct {
+	RectID      string  `json:"rectId"`
+	X           float64 `json:"x"`
+	Y           float64 `json:"y"`
+	Width       float64 `json:"width"`
+	Height      float64 `json:"height"`
+	BorderColor string  `json:"borderColor"`
+	FillColor   string  `json:"fillColor"`
+	UserID      string  `json:"userId"`
+}
+
+func saveRectangle(rect Rectangle) error {
+	_, err := db.Exec(context.Background(), `
+		INSERT INTO rectangles (rect_id, x, y, width, height, border_color, fill_color, user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (rect_id) DO UPDATE SET
+			x = EXCLUDED.x,
+			y = EXCLUDED.y,
+			width = EXCLUDED.width,
+			height = EXCLUDED.height,
+			border_color = EXCLUDED.border_color,
+			fill_color = EXCLUDED.fill_color
+	`, rect.RectID, rect.X, rect.Y, rect.Width, rect.Height, rect.BorderColor, rect.FillColor, rect.UserID)
+	return err
+}
+
+func loadRectangles() ([]Rectangle, error) {
+	rows, err := db.Query(context.Background(), `
+		SELECT rect_id, x, y, width, height, border_color, fill_color, user_id
+		FROM rectangles ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rects []Rectangle
+	for rows.Next() {
+		var r Rectangle
+		if err := rows.Scan(&r.RectID, &r.X, &r.Y, &r.Width, &r.Height, &r.BorderColor, &r.FillColor, &r.UserID); err != nil {
+			continue
+		}
+		rects = append(rects, r)
+	}
+	return rects, nil
+}
+
+func deleteRectangle(rectID string) error {
+	_, err := db.Exec(context.Background(), `DELETE FROM rectangles WHERE rect_id = $1`, rectID)
+	return err
 }
 
 func handleGetItems(w http.ResponseWriter, r *http.Request) {
