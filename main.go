@@ -55,6 +55,67 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// WebSocket proxy to Gateway
+func handleGatewayWS(w http.ResponseWriter, r *http.Request) {
+	// Connect to local Gateway
+	gatewayURL := "ws://127.0.0.1:18789"
+	if os.Getenv("GATEWAY_URL") != "" {
+		gatewayURL = os.Getenv("GATEWAY_URL")
+	}
+	
+	// Open connection to Gateway
+	gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
+	if err != nil {
+		log.Printf("Failed to connect to Gateway: %v", err)
+		http.Error(w, "Gateway unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer gatewayConn.Close()
+	
+	// Upgrade client connection
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade client: %v", err)
+		return
+	}
+	defer clientConn.Close()
+	
+	// Bidirectional proxy
+	errChan := make(chan error, 2)
+	
+	// Client -> Gateway
+	go func() {
+		for {
+			msgType, data, err := clientConn.ReadMessage()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if err := gatewayConn.WriteMessage(msgType, data); err != nil {
+				errChan <- err
+				return
+			}
+		}
+	}()
+	
+	// Gateway -> Client
+	go func() {
+		for {
+			msgType, data, err := gatewayConn.ReadMessage()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if err := clientConn.WriteMessage(msgType, data); err != nil {
+				errChan <- err
+				return
+			}
+		}
+	}()
+	
+	<-errChan
+}
+
 var hub = &Hub{
 	clients:    make(map[*Client]bool),
 	broadcast:  make(chan []byte),
@@ -263,6 +324,9 @@ func main() {
 	// Proxy /openclaw-studio to Next.js app
 	mux.Handle("/openclaw-studio/", studioProxy)
 	mux.Handle("/openclaw-studio", http.RedirectHandler("/openclaw-studio/", http.StatusMovedPermanently))
+	
+	// Gateway WebSocket proxy for studio
+	mux.HandleFunc("/openclaw-studio/ws", handleGatewayWS)
 	
 	// API and specific routes
 	mux.HandleFunc("GET /rectangle", handleRectangle)
