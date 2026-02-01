@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,16 @@ import (
 // Studio proxy
 var studioURL, _ = url.Parse("http://localhost:3000")
 var studioProxy = httputil.NewSingleHostReverseProxy(studioURL)
+
+// StudioHandler wraps the proxy with proper path handling
+func studioHandler(w http.ResponseWriter, r *http.Request) {
+	// Strip /openclaw-studio prefix
+	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/openclaw-studio")
+	if r.URL.Path == "" {
+		r.URL.Path = "/"
+	}
+	studioProxy.ServeHTTP(w, r)
+}
 
 var db *pgxpool.Pool
 
@@ -321,8 +332,11 @@ func main() {
 	// Routes
 	mux := http.NewServeMux()
 	
-	// Proxy /openclaw-studio to Next.js app
-	mux.Handle("/openclaw-studio/", studioProxy)
+	// Proxy Next.js static assets (direct path, no strip needed)
+	mux.Handle("/_next/", studioProxy)
+	
+	// Proxy /openclaw-studio to Next.js app (strip the prefix)
+	mux.HandleFunc("/openclaw-studio/", studioHandler)
 	mux.Handle("/openclaw-studio", http.RedirectHandler("/openclaw-studio/", http.StatusMovedPermanently))
 	
 	// Gateway WebSocket proxy for studio
