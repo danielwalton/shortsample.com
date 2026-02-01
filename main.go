@@ -335,12 +335,12 @@ func main() {
 	// Proxy Next.js static assets (direct path, no strip needed)
 	mux.Handle("/_next/", studioProxy)
 	
+	// Gateway WebSocket proxy for studio (MUST be before /openclaw-studio/)
+	mux.HandleFunc("/openclaw-studio/ws", handleGatewayWS)
+	
 	// Proxy /openclaw-studio to Next.js app (strip the prefix)
 	mux.HandleFunc("/openclaw-studio/", studioHandler)
 	mux.Handle("/openclaw-studio", http.RedirectHandler("/openclaw-studio/", http.StatusMovedPermanently))
-	
-	// Gateway WebSocket proxy for studio
-	mux.HandleFunc("/openclaw-studio/ws", handleGatewayWS)
 	
 	// API and specific routes
 	mux.HandleFunc("GET /rectangle", handleRectangle)
