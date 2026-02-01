@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -13,6 +15,10 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Studio proxy
+var studioURL, _ = url.Parse("http://localhost:3000")
+var studioProxy = httputil.NewSingleHostReverseProxy(studioURL)
 
 var db *pgxpool.Pool
 
@@ -253,7 +259,12 @@ func main() {
 
 	// Routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", handleHome)
+	
+	// Proxy /openclaw-studio to Next.js app
+	mux.Handle("/openclaw-studio/", studioProxy)
+	mux.Handle("/openclaw-studio", http.RedirectHandler("/openclaw-studio/", http.StatusMovedPermanently))
+	
+	// API and specific routes
 	mux.HandleFunc("GET /rectangle", handleRectangle)
 	mux.HandleFunc("GET /city", handleCity)
 	mux.HandleFunc("GET /favicon.svg", handleFavicon)
@@ -261,6 +272,9 @@ func main() {
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/items", handleGetItems)
 	mux.HandleFunc("POST /api/items", handleCreateItem)
+	
+	// Root handler - must be last
+	mux.HandleFunc("/", handleHome)
 
 	// Server
 	port := os.Getenv("PORT")

@@ -82,6 +82,7 @@
         let isDrawing = false;
         let drawStart = null;
         let currentRect = null;
+        const GRID_SIZE = 50;
 
         // Initial canvas setup
         resize();
@@ -103,6 +104,11 @@
             render();
         }
         window.addEventListener('resize', resize);
+
+        // Snap to grid
+        function snapToGrid(value) {
+            return Math.round(value / GRID_SIZE) * GRID_SIZE;
+        }
 
         // WebSocket setup
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -159,7 +165,11 @@
 
         canvas.addEventListener('mousedown', (e) => {
             isDrawing = true;
-            drawStart = getMousePos(e);
+            const pos = getMousePos(e);
+            drawStart = {
+                x: snapToGrid(pos.x),
+                y: snapToGrid(pos.y)
+            };
             currentRect = {
                 x: drawStart.x,
                 y: drawStart.y,
@@ -185,17 +195,24 @@
 
             // Update rectangle being drawn
             if (isDrawing && currentRect) {
-                currentRect.width = pos.x - drawStart.x;
-                currentRect.height = pos.y - drawStart.y;
+                const snappedX = snapToGrid(pos.x);
+                const snappedY = snapToGrid(pos.y);
+                
+                currentRect.width = snappedX - drawStart.x;
+                currentRect.height = snappedY - drawStart.y;
                 
                 // Normalize (handle dragging in any direction)
                 if (currentRect.width < 0) {
-                    currentRect.x = pos.x;
-                    currentRect.width = Math.abs(currentRect.width);
+                    currentRect.x = snappedX;
+                    currentRect.width = drawStart.x - snappedX;
+                } else {
+                    currentRect.x = drawStart.x;
                 }
                 if (currentRect.height < 0) {
-                    currentRect.y = pos.y;
-                    currentRect.height = Math.abs(currentRect.height);
+                    currentRect.y = snappedY;
+                    currentRect.height = drawStart.y - snappedY;
+                } else {
+                    currentRect.y = drawStart.y;
                 }
                 
                 render();
