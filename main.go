@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,19 @@ import (
 )
 
 var db *pgxpool.Pool
+
+// City state: "q,r" -> cell data
+type CityCell struct {
+	Q            int         `json:"q"`
+	R            int         `json:"r"`
+	Type         string      `json:"type"`
+	UserID       string      `json:"userId"`
+	Timestamp    int64       `json:"timestamp"`
+	BuildingData interface{} `json:"buildingData,omitempty"`
+}
+
+var cityState = make(map[string]CityCell)
+var cityMu sync.RWMutex
 
 // WebSocket hub for multiplayer
 type Hub struct {
@@ -52,13 +66,30 @@ func (h *Hub) run() {
 			h.clients[client] = true
 			count := len(h.clients)
 			h.mu.Unlock()
+			
 			// Send server time to new client for sync
 			syncMsg, _ := json.Marshal(map[string]interface{}{
 				"type":      "sync",
+				"id":        client.id,
 				"startTime": serverStartTime,
 				"now":       time.Now().UnixMilli(),
 			})
 			client.send <- syncMsg
+			
+			// Send full city state
+			cityMu.RLock()
+			cityArray := make([]CityCell, 0, len(cityState))
+			for _, cell := range cityState {
+				cityArray = append(cityArray, cell)
+			}
+			cityMu.RUnlock()
+			
+			citySyncMsg, _ := json.Marshal(map[string]interface{}{
+				"type": "city_sync",
+				"city": cityArray,
+			})
+			client.send <- citySyncMsg
+			
 			// Broadcast participant count
 			h.broadcastCount(count)
 
@@ -112,9 +143,49 @@ func (c *Client) readPump() {
 		if err != nil {
 			break
 		}
-		// Add client ID to message and broadcast
+		
 		var data map[string]interface{}
-		if json.Unmarshal(message, &data) == nil {
+		if json.Unmarshal(message, &data) != nil {
+			continue
+		}
+		
+		msgType, _ := data["type"].(string)
+		
+		switch msgType {
+		case "city_update":
+			// Store city update
+			q, _ := data["q"].(float64)
+			r, _ := data["r"].(float64)
+			terrain, _ := data["terrain"].(string)
+			buildingData, _ := data["buildingData"]
+			
+			key := fmt.Sprintf("%d,%d", int(q), int(r))
+			cell := CityCell{
+				Q:            int(q),
+				R:            int(r),
+				Type:         terrain,
+				UserID:       c.id,
+				Timestamp:    time.Now().UnixMilli(),
+				BuildingData: buildingData,
+			}
+			
+			cityMu.Lock()
+			cityState[key] = cell
+			cityMu.Unlock()
+			
+			// Broadcast to others
+			data["id"] = c.id
+			msg, _ := json.Marshal(data)
+			c.hub.broadcast <- msg
+			
+		case "city_cursor":
+			// Just broadcast cursor position
+			data["id"] = c.id
+			msg, _ := json.Marshal(data)
+			c.hub.broadcast <- msg
+			
+		default:
+			// Default: add client ID and broadcast
 			data["id"] = c.id
 			msg, _ := json.Marshal(data)
 			c.hub.broadcast <- msg
@@ -183,6 +254,8 @@ func main() {
 	// Routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", handleHome)
+	mux.HandleFunc("GET /rectangle", handleRectangle)
+	mux.HandleFunc("GET /city", handleCity)
 	mux.HandleFunc("GET /favicon.svg", handleFavicon)
 	mux.HandleFunc("GET /ws", handleWebSocket)
 	mux.HandleFunc("GET /api/health", handleHealth)
@@ -201,6 +274,14 @@ func main() {
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "static/index.html")
+}
+
+func handleRectangle(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "static/rectangle.html")
+}
+
+func handleCity(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "static/city.html")
 }
 
 func handleFavicon(w http.ResponseWriter, r *http.Request) {

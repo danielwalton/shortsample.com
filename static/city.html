@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <title>City Builder</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #1a1a2e;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            cursor: grab;
+        }
+        #canvas:active {
+            cursor: grabbing;
+        }
+        #canvas.placing {
+            cursor: crosshair;
+        }
+        
+        /* UI Panel */
+        .ui-panel {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 12px 20px;
+            display: flex;
+            gap: 12px;
+            z-index: 100;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .terrain-btn {
+            width: 60px;
+            height: 60px;
+            border: 2px solid transparent;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: all 0.2s;
+            background: rgba(255,255,255,0.05);
+            color: rgba(255,255,255,0.7);
+            font-size: 11px;
+        }
+        
+        .terrain-btn:hover {
+            background: rgba(255,255,255,0.1);
+            transform: translateY(-2px);
+        }
+        
+        .terrain-btn.active {
+            border-color: #4a9eff;
+            background: rgba(74, 158, 255, 0.2);
+            color: #fff;
+        }
+        
+        .terrain-btn .icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+        }
+        
+        .terrain-btn.water .icon { background: linear-gradient(135deg, #2980b9, #3498db); }
+        .terrain-btn.park .icon { background: linear-gradient(135deg, #27ae60, #2ecc71); }
+        .terrain-btn.buildings .icon { background: linear-gradient(135deg, #8e44ad, #9b59b6); }
+        
+        /* Stats */
+        .stats {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: rgba(255,255,255,0.6);
+            font-size: 12px;
+            z-index: 100;
+            background: rgba(0,0,0,0.6);
+            padding: 12px 16px;
+            border-radius: 8px;
+        }
+        
+        .stats span {
+            color: #fff;
+            font-weight: 600;
+        }
+        
+        /* Zoom controls */
+        .zoom-controls {
+            position: fixed;
+            right: 20px;
+            bottom: 100px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 100;
+        }
+        
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.6);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        
+        .zoom-btn:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        /* Participant count */
+        .participant-count {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: rgba(255,255,255,0.6);
+            font-size: 14px;
+            z-index: 100;
+            background: rgba(0,0,0,0.6);
+            padding: 8px 12px;
+            border-radius: 8px;
+        }
+        
+        .participant-count span {
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        /* Instructions */
+        .instructions {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.3);
+            font-size: 14px;
+            text-align: center;
+            pointer-events: none;
+            z-index: 50;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    
+    <div class="stats">
+        <div>Population: <span id="population">0</span></div>
+        <div>Buildings: <span id="buildingCount">0</span></div>
+        <div>Parks: <span id="parkCount">0</span></div>
+        <div>Water: <span id="waterCount">0</span></div>
+    </div>
+    
+    <div class="participant-count"><span id="count">1</span> online</div>
+    
+    <div class="zoom-controls">
+        <button class="zoom-btn" id="zoomIn">+</button>
+        <button class="zoom-btn" id="zoomOut">−</button>
+    </div>
+    
+    <div class="ui-panel">
+        <button class="terrain-btn water active" data-terrain="water">
+            <div class="icon"></div>
+            <span>Water</span>
+        </button>
+        <button class="terrain-btn park" data-terrain="park">
+            <div class="icon"></div>
+            <span>Park</span>
+        </button>
+        <button class="terrain-btn buildings" data-terrain="buildings">
+            <div class="icon"></div>
+            <span>Build</span>
+        </button>
+    </div>
+    
+    <div class="instructions" id="instructions">
+        Scroll to zoom · Drag to pan · Click hex to build
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const HEX_SIZE = 40;
+        const HEX_HEIGHT = HEX_SIZE * 2;
+        const HEX_WIDTH = Math.sqrt(3) * HEX_SIZE;
+        
+        // State
+        let camera = { x: 0, y: 0, zoom: 1 };
+        let isDragging = false;
+        let lastMouse = { x: 0, y: 0 };
+        let selectedTerrain = 'water';
+        let hoveredHex = null;
+        let myId = null;
+        let cursors = new Map();
+        let renderTime = 0;  // Must be declared before any function calls render()
+        
+        // City state: "q,r" -> { type, buildingData, color, timestamp, userId }
+        const city = new Map();
+        
+        // Colors for each terrain type
+        const TERRAIN_COLORS = {
+            water: { fill: '#2980b9', stroke: '#3498db', highlight: '#5dade2' },
+            park: { fill: '#27ae60', stroke: '#2ecc71', highlight: '#58d68d' },
+            buildings: { fill: '#5d4e37', stroke: '#8d7e67', highlight: '#a09078' }
+        };
+        
+        // Canvas sizing
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            render();
+        }
+        window.addEventListener('resize', resize);
+        resize();
+        
+        // Hex grid math (axial coordinates)
+        function pixelToHex(x, y) {
+            const q = (Math.sqrt(3)/3 * x - 1./3 * y) / HEX_SIZE;
+            const r = (2./3 * y) / HEX_SIZE;
+            return hexRound(q, r);
+        }
+        
+        function hexRound(q, r) {
+            let x = q;
+            let z = r;
+            let y = -x - z;
+            
+            let rx = Math.round(x);
+            let rz = Math.round(z);
+            let ry = Math.round(y);
+            
+            let x_diff = Math.abs(rx - x);
+            let y_diff = Math.abs(ry - y);
+            let z_diff = Math.abs(rz - z);
+            
+            if (x_diff > y_diff && x_diff > z_diff) {
+                rx = -ry - rz;
+            } else if (y_diff > z_diff) {
+                ry = -rx - rz;
+            } else {
+                rz = -rx - ry;
+            }
+            
+            return { q: rx, r: rz };
+        }
+        
+        function hexToPixel(q, r) {
+            const x = HEX_SIZE * (Math.sqrt(3) * q + Math.sqrt(3)/2 * r);
+            const y = HEX_SIZE * (3./2 * r);
+            return { x, y };
+        }
+        
+        // World to screen transform
+        function worldToScreen(wx, wy) {
+            return {
+                x: (wx - camera.x) * camera.zoom + canvas.width / 2,
+                y: (wy - camera.y) * camera.zoom + canvas.height / 2
+            };
+        }
+        
+        function screenToWorld(sx, sy) {
+            return {
+                x: (sx - canvas.width / 2) / camera.zoom + camera.x,
+                y: (sy - canvas.height / 2) / camera.zoom + camera.y
+            };
+        }
+        
+        // Generate random building
+        function generateBuilding() {
+            const floors = Math.floor(Math.random() * 8) + 2; // 2-10 floors
+            const footprint = 0.4 + Math.random() * 0.4; // 40-80% of hex
+            
+            const structures = [];
+            for (let i = 0; i < floors; i++) {
+                const setback = i > 2 ? (i - 2) * 0.05 : 0;
+                const size = Math.max(0.2, footprint - setback);
+                structures.push({
+                    floor: i,
+                    size: size,
+                    height: 1.0,
+                    color: `hsl(${200 + Math.random() * 40}, ${30 + Math.random() * 20}%, ${40 + Math.random() * 30}%)`,
+                    windows: Math.random() > 0.3
+                });
+            }
+            
+            return {
+                floors,
+                structures,
+                population: floors * Math.floor(Math.random() * 50 + 20)
+            };
+        }
+        
+        // Get visible hex bounds
+        function getVisibleHexes() {
+            const corners = [
+                screenToWorld(0, 0),
+                screenToWorld(canvas.width, 0),
+                screenToWorld(canvas.width, canvas.height),
+                screenToWorld(0, canvas.height)
+            ];
+            
+            const hexes = [];
+            const minQ = Math.floor(pixelToHex(corners[0].x - HEX_WIDTH, corners[0].y - HEX_HEIGHT).q) - 1;
+            const maxQ = Math.ceil(pixelToHex(corners[2].x + HEX_WIDTH, corners[2].y + HEX_HEIGHT).q) + 1;
+            const minR = Math.floor(pixelToHex(corners[0].x - HEX_WIDTH, corners[0].y - HEX_HEIGHT).r) - 1;
+            const maxR = Math.ceil(pixelToHex(corners[2].x + HEX_WIDTH, corners[2].y + HEX_HEIGHT).r) + 1;
+            
+            for (let q = minQ; q <= maxQ; q++) {
+                for (let r = minR; r <= maxR; r++) {
+                    hexes.push({ q, r });
+                }
+            }
+            return hexes;
+        }
+        
+        // Draw a single hex
+        function drawHex(q, r, terrain, highlight = false) {
+            const pos = hexToPixel(q, r);
+            const screen = worldToScreen(pos.x, pos.y);
+            const size = HEX_SIZE * camera.zoom;
+            
+            const colors = TERRAIN_COLORS[terrain] || TERRAIN_COLORS.water;
+            
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 3) * i - Math.PI / 6;
+                const x = screen.x + size * Math.cos(angle);
+                const y = screen.y + size * Math.sin(angle);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            
+            // Fill with gradient
+            const grad = ctx.createRadialGradient(
+                screen.x, screen.y, 0,
+                screen.x, screen.y, size
+            );
+            grad.addColorStop(0, colors.highlight);
+            grad.addColorStop(1, colors.fill);
+            ctx.fillStyle = grad;
+            ctx.fill();
+            
+            // Stroke
+            ctx.strokeStyle = highlight ? '#fff' : colors.stroke;
+            ctx.lineWidth = highlight ? 3 : 1;
+            ctx.stroke();
+            
+            return { x: screen.x, y: screen.y, size };
+        }
+        
+        // Draw building on hex
+        function drawBuilding(q, r, buildingData) {
+            const pos = hexToPixel(q, r);
+            const screen = worldToScreen(pos.x, pos.y);
+            const baseSize = HEX_SIZE * camera.zoom * 0.8;
+            
+            const structures = buildingData.structures;
+            const floorHeight = (baseSize * 0.6) / structures.length;
+            
+            structures.forEach((struct, i) => {
+                const size = baseSize * struct.size;
+                const yOffset = -i * floorHeight * 0.8;
+                
+                // Building block with pseudo-3D
+                const x = screen.x;
+                const y = screen.y + yOffset;
+                
+                // Shadow/depth
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.fillRect(x - size/2 + 4, y - floorHeight/2 + 4, size, floorHeight);
+                
+                // Main block
+                ctx.fillStyle = struct.color;
+                ctx.fillRect(x - size/2, y - floorHeight/2, size, floorHeight);
+                
+                // Top highlight
+                ctx.fillStyle = 'rgba(255,255,255,0.1)';
+                ctx.fillRect(x - size/2, y - floorHeight/2, size, floorHeight * 0.3);
+                
+                // Windows
+                if (struct.windows && camera.zoom > 0.5) {
+                    ctx.fillStyle = Math.random() > 0.7 ? '#ffeaa7' : '#2c3e50';
+                    for (let wx = 0; wx < 3; wx++) {
+                        for (let wy = 0; wy < 2; wy++) {
+                            const wxp = x - size/2 + size * 0.2 + wx * size * 0.25;
+                            const wyp = y - floorHeight/2 + floorHeight * 0.2 + wy * floorHeight * 0.4;
+                            ctx.fillRect(wxp, wyp, size * 0.15, floorHeight * 0.25);
+                        }
+                    }
+                }
+            });
+            
+            // Population indicator
+            if (camera.zoom > 0.7) {
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${10 * camera.zoom}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.fillText(buildingData.population, screen.x, screen.y + 4);
+            }
+        }
+        
+        // Draw park
+        function drawPark(q, r) {
+            const pos = hexToPixel(q, r);
+            const screen = worldToScreen(pos.x, pos.y);
+            const size = HEX_SIZE * camera.zoom * 0.6;
+            
+            // Trees
+            const trees = [
+                { x: -0.3, y: -0.2 },
+                { x: 0.2, y: -0.3 },
+                { x: 0, y: 0.2 },
+                { x: -0.2, y: 0.3 },
+                { x: 0.3, y: 0.1 }
+            ];
+            
+            trees.forEach((tree, i) => {
+                const tx = screen.x + tree.x * size;
+                const ty = screen.y + tree.y * size;
+                const treeSize = size * 0.15;
+                
+                // Trunk
+                ctx.fillStyle = '#5d4e37';
+                ctx.fillRect(tx - treeSize/4, ty, treeSize/2, treeSize);
+                
+                // Leaves
+                ctx.fillStyle = i % 2 === 0 ? '#27ae60' : '#2ecc71';
+                ctx.beginPath();
+                ctx.arc(tx, ty - treeSize/2, treeSize, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+        
+        // Draw water effect
+        function drawWater(q, r, time) {
+            const pos = hexToPixel(q, r);
+            const screen = worldToScreen(pos.x, pos.y);
+            const size = HEX_SIZE * camera.zoom * 0.3;
+            
+            // Ripple effect
+            const offset = (q + r) * 0.5 + time * 0.002;
+            const ripple = Math.sin(offset) * 3;
+            
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.beginPath();
+            ctx.arc(screen.x + ripple, screen.y + ripple * 0.5, size * 0.3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        // Main render
+        function render(time) {
+            renderTime = time || 0;
+            
+            // Clear
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid background
+            ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+            ctx.lineWidth = 1;
+            const gridSize = HEX_SIZE * camera.zoom;
+            const offsetX = (camera.x * camera.zoom) % gridSize;
+            const offsetY = (camera.y * camera.zoom) % gridSize;
+            
+            for (let x = -offsetX; x < canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = -offsetY; y < canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            // Get visible hexes
+            const visibleHexes = getVisibleHexes();
+            
+            // Draw base hexes
+            visibleHexes.forEach(({ q, r }) => {
+                const key = `${q},${r}`;
+                const cell = city.get(key);
+                const isHovered = hoveredHex && hoveredHex.q === q && hoveredHex.r === r;
+                
+                if (cell) {
+                    drawHex(q, r, cell.type, isHovered);
+                } else {
+                    // Empty hex
+                    drawHex(q, r, 'empty', isHovered);
+                }
+            });
+            
+            // Draw terrain details (buildings, parks, water effects)
+            visibleHexes.forEach(({ q, r }) => {
+                const key = `${q},${r}`;
+                const cell = city.get(key);
+                if (!cell) return;
+                
+                if (cell.type === 'buildings' && cell.buildingData) {
+                    drawBuilding(q, r, cell.buildingData);
+                } else if (cell.type === 'park') {
+                    drawPark(q, r);
+                } else if (cell.type === 'water') {
+                    drawWater(q, r, time);
+                }
+            });
+            
+            // Draw cursors
+            cursors.forEach((cursor, userId) => {
+                if (userId === myId) return;
+                const pos = hexToPixel(cursor.q, cursor.r);
+                const screen = worldToScreen(pos.x, pos.y);
+                
+                ctx.strokeStyle = cursor.color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, HEX_SIZE * camera.zoom * 0.8, 0, Math.PI * 2);
+                ctx.stroke();
+                
+                ctx.fillStyle = cursor.color;
+                ctx.font = '12px sans-serif';
+                ctx.fillText(userId.slice(0, 6), screen.x + 20, screen.y - 20);
+            });
+            
+            requestAnimationFrame(render);
+        }
+        
+        // Empty hex styling
+        TERRAIN_COLORS.empty = { fill: '#16213e', stroke: '#1a1a2e', highlight: '#1f4068' };
+        
+        // Mouse handling
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+        
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; // Only left click
+            isDragging = true;
+            lastMouse = getMousePos(e);
+            canvas.classList.add('placing');
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            const pos = getMousePos(e);
+            const world = screenToWorld(pos.x, pos.y);
+            hoveredHex = pixelToHex(world.x, world.y);
+            
+            if (isDragging) {
+                const dx = (pos.x - lastMouse.x) / camera.zoom;
+                const dy = (pos.y - lastMouse.y) / camera.zoom;
+                camera.x -= dx;
+                camera.y -= dy;
+                lastMouse = pos;
+            }
+            
+            // Broadcast cursor
+            if (ws.readyState === WebSocket.OPEN && myId && hoveredHex) {
+                ws.send(JSON.stringify({
+                    type: 'city_cursor',
+                    q: hoveredHex.q,
+                    r: hoveredHex.r
+                }));
+            }
+        });
+        
+        canvas.addEventListener('mouseup', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+            canvas.classList.remove('placing');
+            
+            const pos = getMousePos(e);
+            const dx = Math.abs(pos.x - lastMouse.x);
+            const dy = Math.abs(pos.y - lastMouse.y);
+            
+            // Only place if we didn't drag much (click vs drag)
+            if (dx < 5 && dy < 5 && hoveredHex) {
+                placeTerrain(hoveredHex.q, hoveredHex.r, selectedTerrain);
+            }
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            isDragging = false;
+            hoveredHex = null;
+        });
+        
+        // Zoom with scroll
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = Math.max(0.2, Math.min(3, camera.zoom * zoomFactor));
+            
+            // Zoom towards mouse position
+            const pos = getMousePos(e);
+            const worldBefore = screenToWorld(pos.x, pos.y);
+            camera.zoom = newZoom;
+            const worldAfter = screenToWorld(pos.x, pos.y);
+            
+            camera.x += worldBefore.x - worldAfter.x;
+            camera.y += worldBefore.y - worldAfter.y;
+        }, { passive: false });
+        
+        // Zoom buttons
+        document.getElementById('zoomIn').addEventListener('click', () => {
+            camera.zoom = Math.min(3, camera.zoom * 1.3);
+        });
+        document.getElementById('zoomOut').addEventListener('click', () => {
+            camera.zoom = Math.max(0.2, camera.zoom / 1.3);
+        });
+        
+        // Terrain selection
+        document.querySelectorAll('.terrain-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.terrain-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                selectedTerrain = btn.dataset.terrain;
+            });
+        });
+        
+        // Place terrain
+        function placeTerrain(q, r, type) {
+            const key = `${q},${r}`;
+            const existing = city.get(key);
+            
+            // Don't overwrite same type
+            if (existing && existing.type === type) return;
+            
+            const cell = {
+                type,
+                userId: myId,
+                timestamp: Date.now()
+            };
+            
+            if (type === 'buildings') {
+                cell.buildingData = generateBuilding();
+            }
+            
+            city.set(key, cell);
+            updateStats();
+            
+            // Broadcast
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'city_update',
+                    q, r,
+                    terrain: type,
+                    buildingData: cell.buildingData
+                }));
+            }
+            
+            // Hide instructions
+            document.getElementById('instructions').style.display = 'none';
+        }
+        
+        // Update stats
+        function updateStats() {
+            let pop = 0, buildings = 0, parks = 0, water = 0;
+            city.forEach(cell => {
+                if (cell.type === 'buildings') {
+                    buildings++;
+                    pop += cell.buildingData?.population || 0;
+                } else if (cell.type === 'park') {
+                    parks++;
+                } else if (cell.type === 'water') {
+                    water++;
+                }
+            });
+            document.getElementById('population').textContent = pop.toLocaleString();
+            document.getElementById('buildingCount').textContent = buildings;
+            document.getElementById('parkCount').textContent = parks;
+            document.getElementById('waterCount').textContent = water;
+        }
+        
+        // Generate user color
+        function generateColor(id) {
+            let hash = 0;
+            for (let i = 0; i < id.length; i++) {
+                hash = id.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const hue = Math.abs(hash % 360);
+            return `hsl(${hue}, 70%, 60%)`;
+        }
+        
+        // WebSocket
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        
+        ws.onopen = () => {
+            console.log('Connected to city builder');
+        };
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'sync') {
+                myId = data.id;
+            } else if (data.type === 'count') {
+                document.getElementById('count').textContent = data.count;
+            } else if (data.type === 'city_sync') {
+                // Full city state from server
+                city.clear();
+                data.city.forEach(cell => {
+                    city.set(`${cell.q},${cell.r}`, cell);
+                });
+                updateStats();
+            } else if (data.type === 'city_update') {
+                // Single cell update
+                const cell = {
+                    type: data.terrain,
+                    userId: data.id,
+                    timestamp: Date.now(),
+                    buildingData: data.buildingData
+                };
+                city.set(`${data.q},${data.r}`, cell);
+                updateStats();
+            } else if (data.type === 'city_cursor') {
+                cursors.set(data.id, { q: data.q, r: data.r, color: generateColor(data.id) });
+            }
+        };
+        
+        // Start render loop
+        requestAnimationFrame(render);
+    </script>
+</body>
+</html>

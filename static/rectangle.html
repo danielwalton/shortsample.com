@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <title>Rectangle Arena</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #0a0a0a;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            cursor: crosshair;
+        }
+        .participant-count {
+            position: fixed;
+            top: 20px;
+            right: 25px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+            z-index: 100;
+        }
+        .participant-count span {
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.85);
+        }
+        .instructions {
+            position: fixed;
+            bottom: 25px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 14px;
+            z-index: 100;
+            text-align: center;
+            pointer-events: none;
+        }
+        .user-indicator {
+            position: fixed;
+            top: 20px;
+            left: 25px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+            z-index: 100;
+        }
+        .user-indicator .color-box {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 8px;
+            border-radius: 2px;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="participant-count"><span id="count">1</span> online</div>
+    <div class="user-indicator">
+        <span class="color-box" id="userColor"></span>
+        <span id="userId">connecting...</span>
+    </div>
+    <div class="instructions">Click and drag to draw rectangles</div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const userColorBox = document.getElementById('userColor');
+        const userIdDisplay = document.getElementById('userId');
+
+        // State (must be defined before functions that use them)
+        const rectangles = new Map(); // rectId -> {x, y, width, height, color, userId}
+        const cursors = new Map(); // userId -> {x, y}
+        let myId = null;
+        let myColor = null;
+        let isDrawing = false;
+        let drawStart = null;
+        let currentRect = null;
+
+        // Initial canvas setup
+        resize();
+
+        // Generate user color from ID
+        function generateColor(id) {
+            let hash = 0;
+            for (let i = 0; i < id.length; i++) {
+                hash = id.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const hue = Math.abs(hash % 360);
+            return `hsl(${hue}, 70%, 60%)`;
+        }
+
+        // Canvas sizing
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            render();
+        }
+        window.addEventListener('resize', resize);
+
+        // WebSocket setup
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+
+        ws.onopen = () => {
+            console.log('Connected to rectangle arena');
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'sync') {
+                myId = data.id;
+                myColor = generateColor(myId);
+                userColorBox.style.backgroundColor = myColor;
+                userIdDisplay.textContent = myId;
+            } else if (data.type === 'count') {
+                document.getElementById('count').textContent = data.count;
+            } else if (data.type === 'rect_create') {
+                // Denormalize coordinates from server (0-1 -> pixels)
+                rectangles.set(data.rectId, {
+                    x: data.x * canvas.width,
+                    y: data.y * canvas.height,
+                    width: data.width * canvas.width,
+                    height: data.height * canvas.height,
+                    color: data.color,
+                    userId: data.id
+                });
+                render();
+            } else if (data.type === 'rect_update') {
+                if (rectangles.has(data.rectId)) {
+                    const rect = rectangles.get(data.rectId);
+                    rect.x = data.x;
+                    rect.y = data.y;
+                    rect.width = data.width;
+                    rect.height = data.height;
+                    render();
+                }
+            } else if (data.type === 'cursor') {
+                cursors.set(data.id, { x: data.x, y: data.y, color: generateColor(data.id) });
+                render();
+            }
+        };
+
+        // Mouse handling
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            drawStart = getMousePos(e);
+            currentRect = {
+                x: drawStart.x,
+                y: drawStart.y,
+                width: 0,
+                height: 0,
+                color: myColor,
+                userId: myId,
+                rectId: `${myId}_${Date.now()}`
+            };
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const pos = getMousePos(e);
+            
+            // Broadcast cursor position
+            if (ws.readyState === WebSocket.OPEN && myId) {
+                ws.send(JSON.stringify({
+                    type: 'cursor',
+                    x: pos.x / canvas.width,
+                    y: pos.y / canvas.height
+                }));
+            }
+
+            // Update rectangle being drawn
+            if (isDrawing && currentRect) {
+                currentRect.width = pos.x - drawStart.x;
+                currentRect.height = pos.y - drawStart.y;
+                
+                // Normalize (handle dragging in any direction)
+                if (currentRect.width < 0) {
+                    currentRect.x = pos.x;
+                    currentRect.width = Math.abs(currentRect.width);
+                }
+                if (currentRect.height < 0) {
+                    currentRect.y = pos.y;
+                    currentRect.height = Math.abs(currentRect.height);
+                }
+                
+                render();
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            if (isDrawing && currentRect) {
+                // Only create if rectangle has some size
+                if (currentRect.width > 5 && currentRect.height > 5) {
+                    rectangles.set(currentRect.rectId, currentRect);
+                    
+                    // Broadcast to others
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            type: 'rect_create',
+                            rectId: currentRect.rectId,
+                            x: currentRect.x / canvas.width,
+                            y: currentRect.y / canvas.height,
+                            width: currentRect.width / canvas.width,
+                            height: currentRect.height / canvas.height,
+                            color: currentRect.color
+                        }));
+                    }
+                }
+                
+                currentRect = null;
+                isDrawing = false;
+                render();
+            }
+        });
+
+        // Rendering
+        function render() {
+            // Clear
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw grid
+            ctx.strokeStyle = '#1a1a1a';
+            ctx.lineWidth = 1;
+            const gridSize = 50;
+            for (let x = 0; x < canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+
+            // Draw all rectangles
+            rectangles.forEach((rect) => {
+                ctx.fillStyle = rect.color + '40'; // 25% opacity
+                ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+                ctx.strokeStyle = rect.color;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+            });
+
+            // Draw current rectangle being created
+            if (currentRect) {
+                ctx.fillStyle = currentRect.color + '60';
+                ctx.fillRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height);
+                ctx.strokeStyle = currentRect.color;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height);
+                ctx.setLineDash([]);
+            }
+
+            // Draw cursors
+            cursors.forEach((cursor, userId) => {
+                if (userId === myId) return;
+                const x = cursor.x * canvas.width;
+                const y = cursor.y * canvas.height;
+                
+                ctx.fillStyle = cursor.color;
+                ctx.beginPath();
+                ctx.arc(x, y, 6, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = cursor.color + '30';
+                ctx.beginPath();
+                ctx.arc(x, y, 12, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        // Initial render
+        render();
+    </script>
+</body>
+</html>
