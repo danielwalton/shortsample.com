@@ -183,6 +183,7 @@ func main() {
 	// Routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", handleHome)
+	mux.HandleFunc("GET /favicon.svg", handleFavicon)
 	mux.HandleFunc("GET /ws", handleWebSocket)
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/items", handleGetItems)
@@ -200,6 +201,10 @@ func main() {
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "static/index.html")
+}
+
+func handleFavicon(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "static/favicon.svg")
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
