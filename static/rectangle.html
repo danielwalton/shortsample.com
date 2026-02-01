@@ -167,11 +167,12 @@
 
         // Initial canvas setup
         resize();
-        // Load view from URL or start centered
+        // Load view from URL or start zoomed all the way out
         const params = new URLSearchParams(window.location.search);
         if (params.has('z') || params.has('x') || params.has('y')) {
             loadViewFromURL();
         } else {
+            zoom = MIN_ZOOM;
             panX = canvas.width / 2;
             panY = canvas.height / 2;
         }

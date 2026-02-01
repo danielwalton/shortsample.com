@@ -51,7 +51,7 @@
             font-weight: 600;
             color: rgba(255, 255, 255, 0.85);
         }
-        .twitter-link, .archives-link {
+        .twitter-link, .archives-link, .rectangle-link {
             position: fixed;
             left: 50%;
             transform: translateX(-50%);
@@ -71,7 +71,12 @@
             font-size: 14px;
             color: rgba(255, 255, 255, 0.6);
         }
-        .twitter-link:hover, .archives-link:hover {
+        .rectangle-link {
+            bottom: 80px;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+        .twitter-link:hover, .archives-link:hover, .rectangle-link:hover {
             color: #fff;
             text-shadow: 0 0 30px rgba(255,255,255,0.5);
         }
@@ -82,6 +87,7 @@
     <canvas id="canvas"></canvas>
     <canvas id="particles"></canvas>
     <div class="participant-count"><span id="count">1</span> online</div>
+    <a href="/rectangle" class="rectangle-link">rectangle arena</a>
     <a href="https://twitter.com/shortsample" target="_blank" class="twitter-link">@shortsample</a>
     <a href="https://archives.shortsample.com" target="_blank" class="archives-link">archives</a>
 
