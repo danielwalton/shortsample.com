@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>shortsample</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        #particles, #particles-behind {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+        }
+        #particles-behind {
+            z-index: -1;
+        }
+        #canvas {
+            position: relative;
+            z-index: 0;
+        }
+        #particles {
+            z-index: 1;
+        }
+        .participant-count {
+            position: fixed;
+            top: 20px;
+            right: 25px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            z-index: 100;
+            text-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+        .participant-count span {
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.85);
+        }
+        .twitter-link, .archives-link {
+            position: fixed;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.8);
+            text-decoration: none;
+            letter-spacing: 2px;
+            transition: all 0.3s ease;
+            z-index: 100;
+            text-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        .twitter-link {
+            bottom: 50px;
+            font-size: 18px;
+        }
+        .archives-link {
+            bottom: 25px;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+        .twitter-link:hover, .archives-link:hover {
+            color: #fff;
+            text-shadow: 0 0 30px rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="particles-behind"></canvas>
+    <canvas id="canvas"></canvas>
+    <canvas id="particles"></canvas>
+    <div class="participant-count"><span id="count">1</span> online</div>
+    <a href="https://twitter.com/shortsample" target="_blank" class="twitter-link">@shortsample</a>
+    <a href="https://archives.shortsample.com" target="_blank" class="archives-link">archives</a>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+
+        const vertexShaderSource = `
+            attribute vec2 position;
+            void main() {
+                gl_Position = vec4(position, 0.0, 1.0);
+            }
+        `;
+
+        const fragmentShaderSource = `
+            precision highp float;
+            uniform vec2 resolution;
+            uniform float time;
+            uniform vec2 mouse;
+            uniform vec2 touches[10];
+            uniform float touchStrengths[10];
+            uniform int touchCount;
+
+            // Simplex 3D noise
+            vec4 permute(vec4 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+            float snoise(vec3 v) {
+                const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+                const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+
+                vec3 i  = floor(v + dot(v, C.yyy));
+                vec3 x0 = v - i + dot(i, C.xxx);
+
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min(g.xyz, l.zxy);
+                vec3 i2 = max(g.xyz, l.zxy);
+
+                vec3 x1 = x0 - i1 + C.xxx;
+                vec3 x2 = x0 - i2 + C.yyy;
+                vec3 x3 = x0 - D.yyy;
+
+                i = mod(i, 289.0);
+                vec4 p = permute(permute(permute(
+                    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                    + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                    + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+
+                float n_ = 1.0/7.0;
+                vec3 ns = n_ * D.wyz - D.xzx;
+
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+
+                vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_);
+
+                vec4 x = x_ *ns.x + ns.yyyy;
+                vec4 y = y_ *ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+
+                vec4 b0 = vec4(x.xy, y.xy);
+                vec4 b1 = vec4(x.zw, y.zw);
+
+                vec4 s0 = floor(b0)*2.0 + 1.0;
+                vec4 s1 = floor(b1)*2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+                vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+
+                vec3 p0 = vec3(a0.xy, h.x);
+                vec3 p1 = vec3(a0.zw, h.y);
+                vec3 p2 = vec3(a1.xy, h.z);
+                vec3 p3 = vec3(a1.zw, h.w);
+
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+                p0 *= norm.x;
+                p1 *= norm.y;
+                p2 *= norm.z;
+                p3 *= norm.w;
+
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+            }
+
+            float fbm(vec3 p) {
+                float value = 0.0;
+                float amplitude = 0.5;
+                float frequency = 1.0;
+                for (int i = 0; i < 4; i++) {
+                    value += amplitude * snoise(p * frequency);
+                    amplitude *= 0.5;
+                    frequency *= 2.0;
+                }
+                return value;
+            }
+
+            void main() {
+                vec2 uv = gl_FragCoord.xy / resolution.xy;
+                vec2 p = (gl_FragCoord.xy * 2.0 - resolution.xy) / min(resolution.x, resolution.y);
+
+                // Parallax offset based on mouse
+                vec2 parallax = (mouse - 0.5) * 0.1;
+
+                // Calculate touch distortion field
+                vec2 distort = vec2(0.0);
+                float touchHeat = 0.0;
+                float localTimeWarp = 0.0;
+
+                for (int i = 0; i < 10; i++) {
+                    if (i >= touchCount) break;
+
+                    vec2 touchPos = touches[i] * 2.0 - 1.0;
+                    touchPos.x *= resolution.x / resolution.y;
+
+                    vec2 diff = p - touchPos;
+                    float dist = length(diff);
+                    float strength = touchStrengths[i];
+
+                    // Dent/push distortion - push outward from touch point
+                    float pushStrength = exp(-dist * 2.0) * strength * 0.5;
+                    vec2 push = normalize(diff + 0.001) * pushStrength;
+
+                    // Soft ripple dent
+                    float ripple = sin(dist * 6.0 - time * 1.5) * exp(-dist * 1.5) * strength * 0.15;
+                    push += normalize(diff + 0.001) * ripple;
+
+                    distort += push;
+
+                    // Heat accumulation - affects color intensity
+                    touchHeat += exp(-dist * 2.5) * strength;
+
+                    // Local time acceleration near touches
+                    localTimeWarp += exp(-dist * 1.8) * strength * 0.3;
+                }
+
+                // Apply distortion to coordinates
+                vec2 pDistorted = p + distort;
+
+                // Multiple layers with different speeds and parallax depths
+                float t = time * 0.05;
+                float tLocal = t + localTimeWarp * 0.3;
+
+                // Deep layer - slow drift (simplified nesting)
+                vec3 coord1 = vec3(pDistorted * 0.5 + parallax * 0.3, tLocal * 0.3);
+                float n1 = fbm(coord1 + vec3(fbm(coord1)) * 0.5);
+
+                // Mid layer - medium drift
+                vec3 coord2 = vec3(pDistorted * 0.8 + parallax * 0.6 + distort * 0.5, tLocal * 0.5 + 100.0);
+                float n2 = fbm(coord2 + vec3(snoise(coord2 * 0.7)) * 0.4);
+
+                // Front layer - faster drift
+                vec3 coord3 = vec3(pDistorted * 1.2 + parallax * 1.0 + distort * 0.8, tLocal * 0.7 + 200.0);
+                float n3 = fbm(coord3);
+
+                // Color palette - shifts with touch heat
+                float heatShift = touchHeat * 0.5;
+
+                vec3 col1 = vec3(0.02, 0.0, 0.08);
+                vec3 col2 = vec3(0.25 + heatShift * 0.2, 0.05, 0.4 - heatShift * 0.1);
+                vec3 col3 = vec3(0.0 + heatShift * 0.1, 0.25 + heatShift * 0.15, 0.35);
+                vec3 col4 = vec3(0.4 + heatShift * 0.3, 0.05 + heatShift * 0.1, 0.2);
+
+                // Blend layers with sharper transitions
+                float blend1 = smoothstep(-0.3, 0.3, n1);
+                float blend2 = smoothstep(-0.2, 0.5, n2);
+                float blend3 = smoothstep(-0.1, 0.6, n3);
+
+                vec3 color = mix(col1, col2, blend1);
+                color = mix(color, col3, blend2 * 0.7);
+                color = mix(color, col4, blend3 * 0.5);
+
+                // Highlights influenced by touch heat
+                float highlight = pow(max(0.0, n1 + n2 * 0.5), 2.5) * (0.5 + touchHeat * 0.3);
+                color += vec3(0.35 + touchHeat * 0.2, 0.15, 0.5) * highlight;
+
+                float highlight2 = pow(max(0.0, n3), 3.0) * (0.3 + touchHeat * 0.2);
+                color += vec3(0.1, 0.4 + touchHeat * 0.2, 0.4) * highlight2;
+
+                // Vignette - softer
+                float vignette = 1.0 - length(uv - 0.5) * 0.6;
+                color *= vignette;
+
+                // Subtle grain
+                float grain = snoise(vec3(gl_FragCoord.xy * 0.5, time * 10.0)) * 0.015;
+                color += grain;
+
+                // Boost overall contrast, more with heat
+                color = pow(color, vec3(0.9 - touchHeat * 0.05)) * (1.15 + touchHeat * 0.2);
+
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1, -1, 1, -1, -1, 1,
+            -1, 1, 1, -1, 1, 1
+        ]), gl.STATIC_DRAW);
+
+        const positionLocation = gl.getAttribLocation(program, 'position');
+        const resolutionLocation = gl.getUniformLocation(program, 'resolution');
+        const timeLocation = gl.getUniformLocation(program, 'time');
+        const mouseLocation = gl.getUniformLocation(program, 'mouse');
+        const touchCountLocation = gl.getUniformLocation(program, 'touchCount');
+
+        const touchLocations = [];
+        const touchStrengthLocations = [];
+        for (let i = 0; i < 10; i++) {
+            touchLocations.push(gl.getUniformLocation(program, `touches[${i}]`));
+            touchStrengthLocations.push(gl.getUniformLocation(program, `touchStrengths[${i}]`));
+        }
+
+        let mouse = { x: 0.5, y: 0.5 };
+        let targetMouse = { x: 0.5, y: 0.5 };
+
+        // Touch tracking
+        const MAX_TOUCHES = 10;
+        let activeTouches = new Map(); // id -> { x, y, strength, targetStrength }
+
+        function updateTouch(id, x, y, active) {
+            if (active) {
+                if (activeTouches.has(id)) {
+                    const t = activeTouches.get(id);
+                    t.x = x;
+                    t.y = y;
+                    t.targetStrength = 1.0;
+                } else if (activeTouches.size < MAX_TOUCHES) {
+                    activeTouches.set(id, { x, y, strength: 0, targetStrength: 1.0 });
+                }
+            } else {
+                if (activeTouches.has(id)) {
+                    activeTouches.get(id).targetStrength = 0;
+                }
+            }
+        }
+
+        // Mouse as touch point
+        let mouseDown = false;
+        const MOUSE_ID = 'mouse';
+
+        document.addEventListener('mousemove', (e) => {
+            targetMouse.x = e.clientX / window.innerWidth;
+            targetMouse.y = 1.0 - e.clientY / window.innerHeight;
+
+            if (mouseDown) {
+                updateTouch(MOUSE_ID, targetMouse.x, targetMouse.y, true);
+            }
+        });
+
+        document.addEventListener('mousedown', (e) => {
+            mouseDown = true;
+            const x = e.clientX / window.innerWidth;
+            const y = 1.0 - e.clientY / window.innerHeight;
+            updateTouch(MOUSE_ID, x, y, true);
+        });
+
+        document.addEventListener('mouseup', () => {
+            mouseDown = false;
+            updateTouch(MOUSE_ID, 0, 0, false);
+        });
+
+        document.addEventListener('mouseleave', () => {
+            mouseDown = false;
+            updateTouch(MOUSE_ID, 0, 0, false);
+        });
+
+        // Touch events
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            for (const touch of e.changedTouches) {
+                const x = touch.clientX / window.innerWidth;
+                const y = 1.0 - touch.clientY / window.innerHeight;
+                updateTouch(touch.identifier, x, y, true);
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            for (const touch of e.changedTouches) {
+                const x = touch.clientX / window.innerWidth;
+                const y = 1.0 - touch.clientY / window.innerHeight;
+                updateTouch(touch.identifier, x, y, true);
+            }
+            // Update parallax from first touch
+            if (e.touches.length > 0) {
+                targetMouse.x = e.touches[0].clientX / window.innerWidth;
+                targetMouse.y = 1.0 - e.touches[0].clientY / window.innerHeight;
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            for (const touch of e.changedTouches) {
+                updateTouch(touch.identifier, 0, 0, false);
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchcancel', (e) => {
+            for (const touch of e.changedTouches) {
+                updateTouch(touch.identifier, 0, 0, false);
+            }
+        });
+
+        function resize() {
+            const pixelScale = 2.5; // Lower = more pixels, higher = chunkier
+            canvas.width = Math.floor(window.innerWidth / pixelScale);
+            canvas.height = Math.floor(window.innerHeight / pixelScale);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        function render(time) {
+            time *= 0.001;
+
+            // Smooth mouse movement
+            mouse.x += (targetMouse.x - mouse.x) * 0.05;
+            mouse.y += (targetMouse.y - mouse.y) * 0.05;
+
+            // Update touch strengths (fade in/out)
+            const toDelete = [];
+            for (const [id, touch] of activeTouches) {
+                touch.strength += (touch.targetStrength - touch.strength) * 0.15;
+                if (touch.targetStrength === 0 && touch.strength < 0.01) {
+                    toDelete.push(id);
+                }
+            }
+            toDelete.forEach(id => activeTouches.delete(id));
+
+            gl.useProgram(program);
+            gl.enableVertexAttribArray(positionLocation);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+            gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+            gl.uniform1f(timeLocation, time);
+            gl.uniform2f(mouseLocation, mouse.x, mouse.y);
+
+            // Pass touch data to shader
+            const touchArray = Array.from(activeTouches.values());
+            gl.uniform1i(touchCountLocation, touchArray.length);
+
+            for (let i = 0; i < MAX_TOUCHES; i++) {
+                if (i < touchArray.length) {
+                    gl.uniform2f(touchLocations[i], touchArray[i].x, touchArray[i].y);
+                    gl.uniform1f(touchStrengthLocations[i], touchArray[i].strength);
+                } else {
+                    gl.uniform2f(touchLocations[i], 0, 0);
+                    gl.uniform1f(touchStrengthLocations[i], 0);
+                }
+            }
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            requestAnimationFrame(render);
+        }
+
+        requestAnimationFrame(render);
+
+        // Particle system
+        const particleCanvas = document.getElementById('particles');
+        const particleBehindCanvas = document.getElementById('particles-behind');
+        const ctx = particleCanvas.getContext('2d');
+        const ctxBehind = particleBehindCanvas.getContext('2d');
+
+        function resizeParticles() {
+            particleCanvas.width = window.innerWidth;
+            particleCanvas.height = window.innerHeight;
+            particleBehindCanvas.width = window.innerWidth;
+            particleBehindCanvas.height = window.innerHeight;
+        }
+        resizeParticles();
+        window.addEventListener('resize', resizeParticles);
+
+        const NUM_PARTICLES = 100;
+        const particles = [];
+
+        // Flocking parameters
+        const PERCEPTION = 120;      // How far each boid can see
+        const SEPARATION = 0.03;     // Avoid crowding
+        const ALIGNMENT = 0.02;      // Match velocity with neighbors
+        const COHESION = 0.008;      // Move toward center of neighbors
+        const MAX_SPEED = 1.2;
+        const MAX_FORCE = 0.015;
+
+        class Particle {
+            constructor(seed, index) {
+                // Deterministic random based on seed and index
+                const r = (n) => seededRandom(seed * 0.001 + index * 100 + n);
+
+                this.x = r(1) * window.innerWidth;
+                this.y = r(2) * window.innerHeight;
+                this.z = (r(3) - 0.5) * 2;
+                const angle = r(4) * Math.PI * 2;
+                const speed = 0.3 + r(5) * 0.3;
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+                this.vz = (r(6) - 0.5) * 0.01;
+                this.baseRadius = 12 + r(7) * 10;
+                this.zOscillationSpeed = 0.08 + r(8) * 0.1;
+                this.zOscillationPhase = r(9) * Math.PI * 2;
+                this.hue = 220 + r(10) * 80;
+            }
+
+            update(time, neighbors, touchPoints) {
+                // Flocking forces
+                let sepX = 0, sepY = 0, sepCount = 0;
+                let alignX = 0, alignY = 0, alignCount = 0;
+                let cohX = 0, cohY = 0, cohCount = 0;
+
+                for (const other of neighbors) {
+                    if (other === this) continue;
+                    const dx = other.x - this.x;
+                    const dy = other.y - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < PERCEPTION) {
+                        // Separation - steer away from very close boids
+                        if (dist < PERCEPTION * 0.4 && dist > 0) {
+                            sepX -= dx / dist;
+                            sepY -= dy / dist;
+                            sepCount++;
+                        }
+
+                        // Alignment - match velocity
+                        alignX += other.vx;
+                        alignY += other.vy;
+                        alignCount++;
+
+                        // Cohesion - move toward center
+                        cohX += other.x;
+                        cohY += other.y;
+                        cohCount++;
+                    }
+                }
+
+                // Apply separation
+                if (sepCount > 0) {
+                    this.vx += (sepX / sepCount) * SEPARATION;
+                    this.vy += (sepY / sepCount) * SEPARATION;
+                }
+
+                // Apply alignment
+                if (alignCount > 0) {
+                    const avgVx = alignX / alignCount;
+                    const avgVy = alignY / alignCount;
+                    this.vx += (avgVx - this.vx) * ALIGNMENT;
+                    this.vy += (avgVy - this.vy) * ALIGNMENT;
+                }
+
+                // Apply cohesion
+                if (cohCount > 0) {
+                    const centerX = cohX / cohCount;
+                    const centerY = cohY / cohCount;
+                    this.vx += (centerX - this.x) * COHESION * 0.01;
+                    this.vy += (centerY - this.y) * COHESION * 0.01;
+                }
+
+                // Attraction to touch/interaction points
+                for (const touch of touchPoints) {
+                    const touchX = touch.x * window.innerWidth;
+                    const touchY = (1 - touch.y) * window.innerHeight;
+                    const dx = touchX - this.x;
+                    const dy = touchY - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+
+                    // Strong attraction that falls off with distance
+                    const attraction = touch.strength * 0.8 / (1 + dist * 0.005);
+                    this.vx += (dx / dist) * attraction;
+                    this.vy += (dy / dist) * attraction;
+
+                    // Pull toward surface (z=0) when near touch
+                    const touchInfluence = Math.exp(-dist * 0.005) * touch.strength;
+                    this.vz += (0 - this.z) * touchInfluence * 0.02;
+                }
+
+                // Gentle pull toward screen center
+                const cx = window.innerWidth / 2;
+                const cy = window.innerHeight / 2;
+                this.vx += (cx - this.x) * 0.000008;
+                this.vy += (cy - this.y) * 0.000008;
+
+                // Z oscillation - diving in and out
+                const zTarget = Math.sin(time * this.zOscillationSpeed + this.zOscillationPhase) * 0.8;
+                this.vz += (zTarget - this.z) * 0.001;
+                this.vz *= 0.98;
+
+                // Limit speed
+                const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                if (speed > MAX_SPEED) {
+                    this.vx = (this.vx / speed) * MAX_SPEED;
+                    this.vy = (this.vy / speed) * MAX_SPEED;
+                }
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+                this.z += this.vz;
+                this.z = Math.max(-1, Math.min(1, this.z));
+
+                // Soft boundary
+                const margin = 100;
+                const turn = 0.05;
+                if (this.x < margin) this.vx += turn;
+                if (this.x > window.innerWidth - margin) this.vx -= turn;
+                if (this.y < margin) this.vy += turn;
+                if (this.y > window.innerHeight - margin) this.vy -= turn;
+            }
+
+            draw(context, isBehind) {
+                const behind = this.z < 0;
+                if (behind !== isBehind) return;
+
+                const depthScale = 0.7 + (this.z + 1) * 0.3;
+                const radius = this.baseRadius * depthScale;
+
+                // Smooth fade based on z - fade out as approaching z=0 from either side
+                // Full opacity at z = -1 (behind) or z = 1 (front)
+                // Fade near z = 0 (the plasma surface)
+                const distFromSurface = Math.abs(this.z);
+                const surfaceFade = Math.pow(distFromSurface, 0.5); // Gradual fade near surface
+
+                const baseAlpha = behind ? 0.12 : 0.25;
+                const alpha = baseAlpha * surfaceFade * (0.6 + depthScale * 0.4);
+
+                const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                const angle = Math.atan2(this.vy, this.vx);
+
+                // Subtle oval, not too stretched
+                const stretch = 1.3 + speed * 0.5;
+                const radiusX = radius * stretch;
+                const radiusY = radius * 0.6;
+
+                context.save();
+                context.translate(this.x, this.y);
+                context.rotate(angle);
+
+                const lightness = behind ? 55 + (1 - surfaceFade) * 20 : 75;
+                const gradient = context.createRadialGradient(0, 0, 0, 0, 0, radiusX);
+                gradient.addColorStop(0, `hsla(${this.hue}, 60%, ${lightness}%, ${alpha})`);
+                gradient.addColorStop(0.5, `hsla(${this.hue}, 60%, ${lightness}%, ${alpha * 0.5})`);
+                gradient.addColorStop(1, 'transparent');
+
+                context.scale(1, radiusY / radiusX);
+                context.beginPath();
+                context.arc(0, 0, radiusX, 0, Math.PI * 2);
+                context.fillStyle = gradient;
+                context.fill();
+
+                context.restore();
+            }
+        }
+
+        // Initialize particles with deterministic seed
+        function initParticles(seed) {
+            particles.length = 0;
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles.push(new Particle(seed, i));
+            }
+        }
+
+        // Create initial particles (will be reinitialized on sync)
+        initParticles(Date.now());
+
+        function renderParticles(time) {
+            time *= 0.001;
+            ctx.clearRect(0, 0, particleCanvas.width, particleCanvas.height);
+            ctxBehind.clearRect(0, 0, particleBehindCanvas.width, particleBehindCanvas.height);
+
+            // Get active touch points for particle attraction
+            const touchPoints = Array.from(activeTouches.values());
+
+            // Update all particles with flocking
+            for (const p of particles) {
+                p.update(time, particles, touchPoints);
+            }
+
+            // Draw behind particles (z < 0)
+            for (const p of particles) {
+                p.draw(ctxBehind, true);
+            }
+
+            // Draw front particles (z >= 0)
+            for (const p of particles) {
+                p.draw(ctx, false);
+            }
+
+            requestAnimationFrame(renderParticles);
+        }
+        requestAnimationFrame(renderParticles);
+
+        // Multiplayer WebSocket
+        let ws = null;
+        let myId = null;
+        let serverStartTime = 0; // Server's start timestamp
+        let localSyncTime = 0;  // Local time when we synced
+        let synced = false;
+        const remoteTouches = new Map();
+
+        // Seeded random for deterministic particle positions
+        function seededRandom(seed) {
+            const x = Math.sin(seed) * 10000;
+            return x - Math.floor(x);
+        }
+
+        // Track local start for fallback
+        const localStartTime = Date.now();
+
+        // Get time elapsed since server started (synchronized across clients)
+        function getWorldTime() {
+            if (!synced) {
+                // Before sync, use local time since page load
+                return Date.now() - localStartTime;
+            }
+            // Time elapsed since server start + time since we synced
+            return serverStartTime + (Date.now() - localSyncTime);
+        }
+
+        function connectWebSocket() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+            ws.onopen = () => {
+                console.log('Connected to multiplayer');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'sync') {
+                    // Sync time with server - calculate elapsed time since server started
+                    localSyncTime = Date.now();
+                    serverStartTime = data.now - data.startTime; // Elapsed ms since server start
+                    if (!synced) {
+                        synced = true;
+                        // Reinitialize particles with deterministic positions based on server start time
+                        initParticles(data.startTime);
+                    }
+                } else if (data.type === 'count') {
+                    document.getElementById('count').textContent = data.count;
+                } else if (data.type === 'touch' && data.id !== myId) {
+                    // Update remote user's touches
+                    if (!remoteTouches.has(data.id)) {
+                        remoteTouches.set(data.id, { touches: new Map(), lastUpdate: Date.now() });
+                    }
+                    const remote = remoteTouches.get(data.id);
+                    remote.lastUpdate = Date.now();
+
+                    if (data.active) {
+                        const existing = remote.touches.get(data.touchId);
+                        if (existing) {
+                            // Smooth interpolation - set target position
+                            existing.targetX = data.x;
+                            existing.targetY = data.y;
+                            existing.targetStrength = 1;
+                        } else {
+                            remote.touches.set(data.touchId, {
+                                x: data.x,
+                                y: data.y,
+                                targetX: data.x,
+                                targetY: data.y,
+                                strength: 0,
+                                targetStrength: 1
+                            });
+                        }
+                    } else {
+                        const t = remote.touches.get(data.touchId);
+                        if (t) t.targetStrength = 0;
+                    }
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected, reconnecting...');
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
+        }
+
+        connectWebSocket();
+
+        // Throttled WebSocket sending
+        let lastSendTime = 0;
+        const SEND_INTERVAL = 50; // Send at most every 50ms
+        let pendingSend = null;
+
+        function sendTouch(touchId, x, y, active) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            const now = Date.now();
+            const msg = { type: 'touch', touchId, x, y, active };
+
+            // Always send immediately if touch ends
+            if (!active) {
+                ws.send(JSON.stringify(msg));
+                return;
+            }
+
+            // Throttle active touch updates
+            if (now - lastSendTime >= SEND_INTERVAL) {
+                ws.send(JSON.stringify(msg));
+                lastSendTime = now;
+                pendingSend = null;
+            } else {
+                // Queue the latest position to send later
+                pendingSend = msg;
+            }
+        }
+
+        // Flush pending sends periodically
+        setInterval(() => {
+            if (pendingSend && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(pendingSend));
+                lastSendTime = Date.now();
+                pendingSend = null;
+            }
+        }, SEND_INTERVAL);
+
+        // Modify updateTouch to also send over WebSocket
+        const originalUpdateTouch = updateTouch;
+        updateTouch = function(id, x, y, active) {
+            originalUpdateTouch(id, x, y, active);
+            sendTouch(String(id), x, y, active);
+        };
+
+        // Clean up stale remote touches and update strengths
+        function updateRemoteTouches() {
+            const now = Date.now();
+            for (const [userId, remote] of remoteTouches) {
+                // Remove stale users (no update in 5 seconds)
+                if (now - remote.lastUpdate > 5000) {
+                    remoteTouches.delete(userId);
+                    continue;
+                }
+
+                // Update touch positions and strengths with smooth interpolation
+                const toDelete = [];
+                for (const [touchId, touch] of remote.touches) {
+                    // Smooth position interpolation
+                    touch.x += (touch.targetX - touch.x) * 0.2;
+                    touch.y += (touch.targetY - touch.y) * 0.2;
+                    // Smooth strength
+                    touch.strength += (touch.targetStrength - touch.strength) * 0.15;
+                    if (touch.targetStrength === 0 && touch.strength < 0.01) {
+                        toDelete.push(touchId);
+                    }
+                }
+                toDelete.forEach(id => remote.touches.delete(id));
+            }
+        }
+
+        // Get all touches including remote ones for shader/particles
+        function getAllTouches() {
+            const allTouches = Array.from(activeTouches.values());
+            for (const [userId, remote] of remoteTouches) {
+                for (const [touchId, touch] of remote.touches) {
+                    allTouches.push(touch);
+                }
+            }
+            return allTouches;
+        }
+
+        // Update the WebGL render to use all touches and synced time
+        const originalRender = render;
+        render = function(localTime) {
+            // Use world time for synchronized visuals
+            const time = getWorldTime() * 0.001;
+
+            // Smooth mouse movement
+            mouse.x += (targetMouse.x - mouse.x) * 0.05;
+            mouse.y += (targetMouse.y - mouse.y) * 0.05;
+
+            // Update local touch strengths
+            const toDelete = [];
+            for (const [id, touch] of activeTouches) {
+                touch.strength += (touch.targetStrength - touch.strength) * 0.15;
+                if (touch.targetStrength === 0 && touch.strength < 0.01) {
+                    toDelete.push(id);
+                }
+            }
+            toDelete.forEach(id => activeTouches.delete(id));
+
+            // Update remote touches
+            updateRemoteTouches();
+
+            // Get all touches for shader
+            const allTouches = getAllTouches();
+
+            gl.useProgram(program);
+            gl.enableVertexAttribArray(positionLocation);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+            gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+            gl.uniform1f(timeLocation, time);
+            gl.uniform2f(mouseLocation, mouse.x, mouse.y);
+
+            // Pass all touch data to shader
+            gl.uniform1i(touchCountLocation, Math.min(allTouches.length, MAX_TOUCHES));
+
+            for (let i = 0; i < MAX_TOUCHES; i++) {
+                if (i < allTouches.length) {
+                    gl.uniform2f(touchLocations[i], allTouches[i].x, allTouches[i].y);
+                    gl.uniform1f(touchStrengthLocations[i], allTouches[i].strength);
+                } else {
+                    gl.uniform2f(touchLocations[i], 0, 0);
+                    gl.uniform1f(touchStrengthLocations[i], 0);
+                }
+            }
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            requestAnimationFrame(render);
+        };
+
+        // Update particle render to use all touches and synced time
+        const originalRenderParticles = renderParticles;
+        renderParticles = function(localTime) {
+            // Use world time for synchronized visuals
+            const time = getWorldTime() * 0.001;
+            ctx.clearRect(0, 0, particleCanvas.width, particleCanvas.height);
+            ctxBehind.clearRect(0, 0, particleBehindCanvas.width, particleBehindCanvas.height);
+
+            // Get all touch points including remote
+            const touchPoints = getAllTouches();
+
+            // Update all particles with flocking
+            for (const p of particles) {
+                p.update(time, particles, touchPoints);
+            }
+
+            // Draw behind particles (z < 0)
+            for (const p of particles) {
+                p.draw(ctxBehind, true);
+            }
+
+            // Draw front particles (z >= 0)
+            for (const p of particles) {
+                p.draw(ctx, false);
+            }
+
+            requestAnimationFrame(renderParticles);
+        };
+    </script>
+</body>
+</html>

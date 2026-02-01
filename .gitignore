@@ -1,0 +1,9 @@
+# Binary
+server
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
